@@ -1,0 +1,19 @@
+@MandiocaCozidinha.Services.Api_HostAddress = http://localhost:9999
+@PaymentProcessor.Api_HostAddress = http://localhost:8001
+
+POST {{MandiocaCozidinha.Services.Api_HostAddress}}/payments/
+Accept: application/json
+Content-Type: application/json
+{
+  "CorrelationId": "12345678-1234-1234-1234-123456789013",
+  "Amount": 100.00
+}
+###
+
+GET {{MandiocaCozidinha.Services.Api_HostAddress}}/payments-summary?from=2025-07-29T03:56:58.799Z&to=2025-07-29T03:57:08.699Z
+Accept: application/json
+
+###
+GET {{PaymentProcessor.Api_HostAddress}}/admin/payments-summary?from=2025-07-01T00:00:00Z&to=2025-07-31T23:59:59Z
+Accept: application/json
+X-Rinha-Token: 123
