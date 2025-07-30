@@ -44,8 +44,8 @@ services:
     
   api1: &api
     build:
-      context: ../src
-      dockerfile: /src/MandiocaCozidinha.Services.Api/Dockerfile
+      context: ./src
+      dockerfile: ./MandiocaCozidinha.Services.Api/Dockerfile
     hostname: api1
     depends_on:
       rabbitmq:
