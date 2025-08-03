@@ -39,49 +39,31 @@ namespace MandiocaCozidinha.Services.Api.HostedServices
                     try
                     {
                         defaultCheck = await paymentProcessorService.GetServiceHealth("default", cancellationToken);
-                        var s1 = await db.StringGetAsync("semaforo-default-max-timeout");
-                        if (!s1.HasValue || defaultCheck.MinResponseTime > JsonSerializer.Deserialize<PaymentHealthResponse>(s1).MinResponseTime)
-                            await db.StringSetAsync("semaforo-default-max-timeout", JsonSerializer.Serialize(defaultCheck));
-
                         if (!defaultCheck.TooManyRequests)
-                            _memoryCache.Set("semaforo-default", defaultCheck.Failing || defaultCheck.MinResponseTime > 2000 ? "vermelho" : "verde", TimeSpan.FromSeconds(5));
-                        else
-                        {
-                            _memoryCache.TryGetValue("semaforo-default", out string sinal);
-                            _memoryCache.Set("semaforo-default", sinal, TimeSpan.FromSeconds(10));
-                        }
+                            _memoryCache.Set("semaforo-default", defaultCheck.Failing ? "vermelho" : "verde");
+                        await db.SortedSetAddAsync("semaforo-default-healths", JsonSerializer.Serialize(defaultCheck), new DateTimeOffset(DateTime.UtcNow).ToUnixTimeSeconds());
                     }
                     catch (Exception)
                     {
                         _memoryCache.TryGetValue("semaforo-default", out string sinal);
-                        _memoryCache.Set("semaforo-default", sinal, TimeSpan.FromSeconds(10));
+                        _memoryCache.Set("semaforo-default", sinal);
+                        await db.SortedSetAddAsync("semaforo-default-healths", JsonSerializer.Serialize(defaultCheck), new DateTimeOffset(DateTime.UtcNow).ToUnixTimeSeconds());
                     }
 
+                    PaymentHealthResponse fallbackCheck = null;
                     try
                     {
-                        var fallbackCheck = await paymentProcessorService.GetServiceHealth("fallback", cancellationToken);
-                        var s2 = await db.StringGetAsync("semaforo-fallback-max-timeout");
-                        if (defaultCheck != null && (!s2.HasValue || defaultCheck.MinResponseTime > JsonSerializer.Deserialize<PaymentHealthResponse>(s2).MinResponseTime))
-                            await db.StringSetAsync("semaforo-fallback-max-timeout", JsonSerializer.Serialize(defaultCheck));
-
+                        fallbackCheck = await paymentProcessorService.GetServiceHealth("fallback", cancellationToken);
                         if (!fallbackCheck.TooManyRequests)
-                        {
-                            _memoryCache.TryGetValue("semaforo-default", out string sinal);
-                            _memoryCache.Set("semaforo-fallback", sinal == "vermelho" && (fallbackCheck.Failing || fallbackCheck.MinResponseTime > 500) ? "vermelho" : "verde", TimeSpan.FromSeconds(5));
-                        }
-                        else
-                        {
-                            _memoryCache.TryGetValue("semaforo-fallback", out string sinal);
-                            _memoryCache.Set("semaforo-fallback", sinal, TimeSpan.FromSeconds(10));
-                        }
+                            _memoryCache.Set("semaforo-fallback", fallbackCheck.Failing ? "vermelho" : "verde");
+                        await db.SortedSetAddAsync("semaforo-fallback-healths", JsonSerializer.Serialize(fallbackCheck), new DateTimeOffset(DateTime.UtcNow).ToUnixTimeSeconds());
                     }
                     catch (Exception)
                     {
-                        _memoryCache.TryGetValue("semaforo-fallback", out string sinal);
-                        _memoryCache.Set("semaforo-fallback", sinal, TimeSpan.FromSeconds(10));
+                        await db.SortedSetAddAsync("semaforo-fallback-healths", JsonSerializer.Serialize(fallbackCheck), new DateTimeOffset(DateTime.UtcNow).ToUnixTimeSeconds());
                     }
 
-                    await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
+                    await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
                 }
                 await StopAsync(cancellationToken);
             }

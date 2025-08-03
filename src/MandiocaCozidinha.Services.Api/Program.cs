@@ -1,10 +1,7 @@
 using MandiocaCozidinha.Services.Api.Configurations;
-using MandiocaCozidinha.Services.Api.Consumers;
 using MandiocaCozidinha.Services.Api.Contracts;
 using MandiocaCozidinha.Services.Api.HostedServices;
 using MandiocaCozidinha.Services.Api.Services;
-using MassTransit;
-using Microsoft.Extensions.Caching.Memory;
 using StackExchange.Redis;
 using System.Text.Json;
 
@@ -19,60 +16,49 @@ builder.Services.AddLogging(loggingBuilder =>
 });
 
 builder.Services.AddHostedService<PaymentProcessorHealthCheckHostedService>();
-
-builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+builder.Services.AddSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>(a =>
 {
-    var configuration = builder.Configuration["Redis:Server"] ?? throw new InvalidOperationException("redis error");
-    return ConnectionMultiplexer.Connect(configuration);
+    var capacity = int.Parse(builder.Configuration["QueueCapacity"]);
+    return new BackgroundTaskQueue(capacity);
 });
+builder.Services.AddHostedService<QueuedHostedService>();
 
-builder.Services.AddMassTransit(x =>
+builder.Services.AddSingleton<IConnectionMultiplexer, ConnectionMultiplexer>(a =>
 {
-    x.DisableUsageTelemetry();
-    x.SetKebabCaseEndpointNameFormatter();
-
-    x.AddConsumer<PaymentProcessorRequestConsumer, PaymentProcessorRequestConsumerDefinition>();
-
-    x.UsingRabbitMq((context, cfg) =>
+    var configuration = builder.Configuration["Redis:Server"];
+    if (string.IsNullOrEmpty(configuration))
     {
-        cfg.Host(builder.Configuration["RabbitMq:Uri"], "/", c =>
-        {
-            c.Username(builder.Configuration["RabbitMq:User"]);
-            c.Password(builder.Configuration["RabbitMq:Password"]);
-        });
-        cfg.ConfigureEndpoints(context);
-    });
+        throw new InvalidOperationException("Connection string for Redis is not configured.");
+    }
+    
+    return ConnectionMultiplexer.Connect(configuration);
 });
 
 var app = builder.Build();
 app.UseOpenApiWithScalarConfig();
 app.UseHttpsRedirection();
 
-app.MapPost("/payments", async (PaymentRequest request, IPaymentProcessorService paymentProcessorService, IBus bus) =>
+app.MapPost("/payments", async (
+    PaymentRequest request, 
+    IPaymentProcessorService paymentProcessorService,
+    IBackgroundTaskQueue backgroundTaskQueueProvider,
+    CancellationToken cancellationToken) =>
 {
-    try
+    await backgroundTaskQueueProvider.QueueBackgroundWorkItemAsync(async token => 
     {
-        await paymentProcessorService.SendPaymentWithFailoverAsync(new PaymentProcessorRequest
+        var failPayment = false;
+        var dateTimeNow = DateTime.UtcNow;
+
+        while (!failPayment && !cancellationToken.IsCancellationRequested)
         {
-            CorrelationId = request.CorrelationId,
-            Amount = request.Amount,
-            RequestedAt = DateTime.UtcNow
-        });
-    }
-    catch(InvalidOperationException ex)
-    {
-        await bus.GetSendEndpoint(new Uri("queue:payment-processor-request"))
-            .ContinueWith(async endpoint =>
+            failPayment = await paymentProcessorService.SendPaymentWithFailoverAsync(new PaymentProcessorRequest
             {
-                var sendEndpoint = await endpoint;
-                await sendEndpoint.Send(new PaymentProcessorRequest
-                {
-                    CorrelationId = request.CorrelationId,
-                    Amount = request.Amount,
-                    RequestedAt = DateTime.UtcNow
-                });
-            });
-    }
+                CorrelationId = request.CorrelationId,
+                Amount = request.Amount,
+                RequestedAt = dateTimeNow
+            }, cancellationToken);
+        }
+    }, cancellationToken);
     
     return Results.Created($"/payments/{request.CorrelationId}", request);
 });
